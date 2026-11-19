@@ -40,18 +40,41 @@ reason (короткая понятная причина). Сохраните и
 """
 
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
+
+
+def _result(price, decision, reason):
+    return {"price": price, "decision": decision, "reason": reason}
 
 
 async def recommend_price(fetch_offers, current_price, min_price, timeout_s=2.0):
-    result = await fetch_offers()
+    try:
+        result = await asyncio.wait_for(fetch_offers(), timeout_s)
+    except asyncio.TimeoutError:
+        return _result(current_price, "HOLD", "Источник не ответил вовремя")
+    except Exception:
+        return _result(current_price, "HOLD", "Ошибка источника")
+
+    if result["status"] != "success":
+        return _result(current_price, "HOLD", "Нет полных данных от источника")
+
     prices = [
-        float(offer["price"])
+        offer["price"]
         for offer in result["offers"]
-        if offer["delivery_days"] <= 6
+        if offer["delivery_days"] is not None
+        and offer["delivery_days"] <= 6
+        and offer["seller"].lower() != "myshop"
     ]
-    price = round(min(prices) * 0.985, 2)
-    return {"price": price, "decision": "APPLY", "reason": "Найдена минимальная цена"}
+    if not prices:
+        return _result(current_price, "HOLD", "Нет подходящих предложений")
+
+    discounted = (min(prices) * Decimal("0.985")).quantize(
+        Decimal("0.01"), rounding=ROUND_DOWN
+    )
+    price = max(discounted, min_price)
+    if abs(price - current_price) > current_price * Decimal("0.30"):
+        return _result(price, "REVIEW", "Отклонение от текущей цены больше 30%")
+    return _result(price, "APPLY", "Цена в пределах 30% от текущей")
 
 
 async def sample_fetch_offers():
